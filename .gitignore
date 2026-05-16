@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Models (large binary files — download separately)
+models/
+
+# Debug output
+debug/
+
+# Config with local overrides (keep config.yaml.example in repo)
+# config.yaml  # uncomment if you want to exclude local config
+
+# Logs
+*.log
+logs/
+
+# Torch hub cache
+*.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Secrets / env
+.env
+.env.*
+secrets.yaml

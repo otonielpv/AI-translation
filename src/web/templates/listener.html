@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Übersetzung – German Audio</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: system-ui, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 8px; text-align: center; }
+  p  { color: #94a3b8; font-size: 0.9rem; text-align: center; margin-bottom: 32px; }
+  .btn-start {
+    width: 200px; height: 200px;
+    border-radius: 50%;
+    border: none;
+    background: #059669;
+    color: #fff;
+    font-size: 1.1rem;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 0 40px rgba(5,150,105,0.4);
+    transition: transform 0.1s, background 0.2s;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px;
+  }
+  .btn-start:active { transform: scale(0.96); }
+  .btn-start.connected  { background: #1d4ed8; box-shadow: 0 0 40px rgba(29,78,216,0.4); }
+  .btn-start.connecting { background: #78350f; box-shadow: 0 0 40px rgba(120,53,15,0.4); }
+  .icon { font-size: 3rem; line-height: 1; }
+  .status-text { font-size: 0.85rem; margin-top: 24px; color: #64748b; text-align: center; }
+  .volume-hint { margin-top: 40px; color: #475569; font-size: 0.78rem; text-align: center; }
+</style>
+</head>
+<body>
+<h1>Simultanübersetzung</h1>
+<p>Drücken Sie den Knopf, um die deutsche Übersetzung zu hören.</p>
+
+<button class="btn-start" id="btn" onclick="toggleAudio()">
+  <span class="icon">🎧</span>
+  <span id="btn-label">Deutsch hören</span>
+</button>
+
+<div class="status-text" id="status-text">Nicht verbunden</div>
+<div class="volume-hint">Lautstärke mit dem Telefon-Lautstärkeregler einstellen</div>
+
+<script>
+  let ws = null;
+  let audioCtx = null;
+  let connected = false;
+  let nextPlayTime = 0;
+
+  const btn = document.getElementById('btn');
+  const btnLabel = document.getElementById('btn-label');
+  const statusText = document.getElementById('status-text');
+
+  function setStatus(label, state) {
+    btnLabel.textContent = label;
+    btn.className = 'btn-start ' + (state || '');
+    statusText.textContent = {
+      '': 'Nicht verbunden',
+      'connecting': 'Verbinde…',
+      'connected': 'Verbunden — Übersetzung läuft',
+    }[state || ''] || '';
+  }
+
+  function toggleAudio() {
+    if (connected) {
+      disconnect();
+    } else {
+      connect();
+    }
+  }
+
+  function connect() {
+    if (ws) return;
+    setStatus('Verbinde…', 'connecting');
+
+    // AudioContext must be created inside a user gesture
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 });
+    } else if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    nextPlayTime = audioCtx.currentTime;
+
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws/audio`);
+    ws.binaryType = 'arraybuffer';
+
+    ws.onopen = () => {
+      connected = true;
+      setStatus('Stoppen', 'connected');
+    };
+
+    ws.onmessage = async (e) => {
+      if (!audioCtx) return;
+      try {
+        const buf = await audioCtx.decodeAudioData(e.data.slice(0));
+        const src = audioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(audioCtx.destination);
+        const startAt = Math.max(nextPlayTime, audioCtx.currentTime + 0.05);
+        src.start(startAt);
+        nextPlayTime = startAt + buf.duration;
+      } catch (err) {
+        // If the chunk can't be decoded (partial WAV header), skip it
+      }
+    };
+
+    ws.onclose = () => { onDisconnect('Verbindung unterbrochen'); };
+    ws.onerror = () => { onDisconnect('Verbindungsfehler'); };
+  }
+
+  function onDisconnect(reason) {
+    connected = false;
+    ws = null;
+    setStatus('Deutsch hören', '');
+    statusText.textContent = reason + ' — Erneut tippen zum Verbinden';
+  }
+
+  function disconnect() {
+    if (ws) { ws.close(); ws = null; }
+    connected = false;
+    if (audioCtx) { audioCtx.suspend(); }
+    setStatus('Deutsch hören', '');
+  }
+</script>
+</body>
+</html>

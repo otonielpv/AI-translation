@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Translation – Operator</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  header { background: #1e293b; padding: 16px 24px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #334155; }
+  header h1 { font-size: 1.2rem; font-weight: 700; }
+  .badge { padding: 3px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  .badge-stopped  { background: #374151; color: #9ca3af; }
+  .badge-running  { background: #065f46; color: #6ee7b7; }
+  .badge-paused   { background: #78350f; color: #fcd34d; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 20px; max-width: 1100px; }
+  @media (max-width: 700px) { main { grid-template-columns: 1fr; } }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 10px; padding: 18px; }
+  .card h2 { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; margin-bottom: 12px; }
+  .btn { display: inline-block; padding: 10px 18px; border-radius: 7px; border: none; font-size: 0.9rem; font-weight: 600; cursor: pointer; margin: 4px; transition: filter 0.15s; }
+  .btn:hover { filter: brightness(1.15); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-green  { background: #059669; color: #fff; }
+  .btn-yellow { background: #d97706; color: #fff; }
+  .btn-blue   { background: #2563eb; color: #fff; }
+  .btn-red    { background: #dc2626; color: #fff; }
+  .stat-row   { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1e293b; font-size: 0.85rem; }
+  .stat-row:last-child { border: none; }
+  .stat-label { color: #94a3b8; }
+  .stat-val   { font-weight: 600; }
+  .text-box { background: #0f172a; border-radius: 6px; padding: 10px; font-size: 0.82rem; min-height: 52px; word-break: break-word; margin-top: 6px; color: #cbd5e1; font-family: monospace; white-space: pre-wrap; }
+  .text-label { font-size: 0.72rem; color: #64748b; margin-top: 10px; margin-bottom: 2px; text-transform: uppercase; letter-spacing: 0.06em; }
+  #qr-img { display: block; margin: 0 auto; max-width: 180px; border-radius: 8px; background: #fff; padding: 6px; }
+  .qr-url { text-align: center; font-size: 0.8rem; color: #60a5fa; margin-top: 8px; word-break: break-all; }
+  .latency-line { font-family: monospace; font-size: 0.78rem; color: #a3e635; margin-top: 8px; }
+  .listener-count { font-size: 2rem; font-weight: 700; color: #38bdf8; }
+  .error-box { color: #f87171; font-size: 0.82rem; margin-top: 8px; min-height: 20px; }
+  .device-row { margin-top: 14px; }
+  .device-row label { font-size: 0.78rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.06em; display: block; margin-bottom: 5px; }
+  .device-row select { width: 100%; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 7px 10px; font-size: 0.85rem; }
+  .device-row select:disabled { opacity: 0.45; cursor: not-allowed; }
+  .device-msg { font-size: 0.78rem; color: #64748b; margin-top: 5px; min-height: 16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI Translation — Operator</h1>
+  <span id="status-badge" class="badge badge-stopped">stopped</span>
+</header>
+<main>
+
+  <!-- Controls -->
+  <div class="card">
+    <h2>Pipeline Control</h2>
+    <div style="margin-top:8px">
+      <button class="btn btn-green"  id="btn-start"  onclick="cmd('start')">▶ Start</button>
+      <button class="btn btn-yellow" id="btn-pause"  onclick="cmd('pause')" disabled>⏸ Pause</button>
+      <button class="btn btn-blue"   id="btn-resume" onclick="cmd('resume')" disabled>▶ Resume</button>
+      <button class="btn btn-red"    id="btn-stop"   onclick="cmd('stop')"  disabled>■ Stop</button>
+    </div>
+    <div class="error-box" id="error-box"></div>
+
+    <div class="device-row">
+      <label>Audio Input Device</label>
+      <select id="device-select" onchange="setDevice(this.value)" disabled>
+        <option value="">Loading devices…</option>
+      </select>
+      <div class="device-msg" id="device-msg"></div>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="card">
+    <h2>Status</h2>
+    <div class="stat-row"><span class="stat-label">Audio device</span><span class="stat-val" id="st-device">—</span></div>
+    <div class="stat-row"><span class="stat-label">Listeners</span><span class="stat-val listener-count" id="st-listeners">0</span></div>
+    <div class="stat-row"><span class="stat-label">Segments processed</span><span class="stat-val" id="st-segments">0</span></div>
+    <div class="stat-row"><span class="stat-label">STT queue</span><span class="stat-val" id="st-stt-q">0</span></div>
+    <div class="stat-row"><span class="stat-label">TTS queue</span><span class="stat-val" id="st-tts-q">0</span></div>
+    <div class="latency-line" id="latency-line"></div>
+  </div>
+
+  <!-- Transcription -->
+  <div class="card">
+    <h2>Last Transcription (debug)</h2>
+    <div class="text-label">Spanish (STT)</div>
+    <div class="text-box" id="text-es">—</div>
+    <div class="text-label">German (Translation)</div>
+    <div class="text-box" id="text-de">—</div>
+  </div>
+
+  <!-- QR -->
+  <div class="card">
+    <h2>Listener QR Code</h2>
+    <img id="qr-img" src="/qr.png" alt="QR Code" />
+    <div class="qr-url"><a href="{{LAN_URL}}/listen" style="color:#60a5fa">{{LAN_URL}}/listen</a></div>
+  </div>
+
+</main>
+
+<script>
+  let _currentDeviceIndex = null;
+  let _pipelineStatus = 'stopped';
+
+  // Load device list on startup
+  async function loadDevices() {
+    try {
+      const res = await fetch('/operator/devices');
+      const devices = await res.json();
+      const sel = document.getElementById('device-select');
+      sel.innerHTML = '';
+      devices.forEach(d => {
+        const opt = document.createElement('option');
+        opt.value = d.index;
+        opt.textContent = `[${d.index}] ${d.name}  (${d.channels}ch, ${d.default_sr}Hz)`;
+        if (d.index === _currentDeviceIndex) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      updateDeviceSelectState();
+    } catch (err) {
+      document.getElementById('device-msg').textContent = 'Could not load devices.';
+    }
+  }
+
+  function updateDeviceSelectState() {
+    const sel = document.getElementById('device-select');
+    const canChange = _pipelineStatus === 'stopped';
+    sel.disabled = !canChange;
+    document.getElementById('device-msg').textContent =
+      canChange ? '' : 'Stop the pipeline to change device.';
+  }
+
+  async function setDevice(indexStr) {
+    const idx = parseInt(indexStr, 10);
+    if (isNaN(idx)) return;
+    const msg = document.getElementById('device-msg');
+    msg.textContent = 'Changing device…';
+    try {
+      const res = await fetch('/operator/set-device', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ index: idx }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        _currentDeviceIndex = idx;
+        msg.textContent = 'Device updated. Start pipeline to use it.';
+      } else {
+        msg.textContent = 'Error: ' + (data.error || 'unknown');
+      }
+    } catch (err) {
+      msg.textContent = 'Request failed: ' + err.message;
+    }
+  }
+
+  loadDevices();
+
+  const evtSrc = new EventSource('/status/stream');
+
+  evtSrc.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+
+    // Badge
+    const badge = document.getElementById('status-badge');
+    badge.textContent = d.status;
+    badge.className = 'badge badge-' + d.status;
+
+    // Sync device index and enable/disable selector based on pipeline status
+    if (d.audio_device_index !== undefined && d.audio_device_index !== _currentDeviceIndex) {
+      _currentDeviceIndex = d.audio_device_index;
+      // Re-select matching option without reloading the whole list
+      const sel = document.getElementById('device-select');
+      for (const opt of sel.options) {
+        opt.selected = parseInt(opt.value, 10) === _currentDeviceIndex;
+      }
+    }
+    if (d.status !== _pipelineStatus) {
+      _pipelineStatus = d.status;
+      updateDeviceSelectState();
+    }
+
+    // Stats
+    document.getElementById('st-device').textContent    = d.audio_device || '—';
+    document.getElementById('st-listeners').textContent = d.listeners;
+    document.getElementById('st-segments').textContent  = d.segment_count;
+    document.getElementById('st-stt-q').textContent     = d.stt_queue_depth;
+    document.getElementById('st-tts-q').textContent     = d.tts_queue_depth;
+
+    // Latency
+    if (d.latency) {
+      const l = d.latency;
+      document.getElementById('latency-line').textContent =
+        `[latency] seg=${l.segment_s}s stt=${l.stt_s}s tr=${l.translation_s}s tts=${l.tts_s}s pipeline=${l.pipeline_s}s ~user=${l.user_delay_s}s`;
+    }
+
+    // Text
+    document.getElementById('text-es').textContent = d.last_spanish || '—';
+    document.getElementById('text-de').textContent = d.last_german  || '—';
+
+    // Error
+    document.getElementById('error-box').textContent = d.last_error || '';
+
+    // Buttons
+    const running = d.status === 'running';
+    const paused  = d.status === 'paused';
+    const stopped = d.status === 'stopped';
+    document.getElementById('btn-start').disabled  = running || paused;
+    document.getElementById('btn-pause').disabled  = !running;
+    document.getElementById('btn-resume').disabled = !paused;
+    document.getElementById('btn-stop').disabled   = stopped;
+  };
+
+  async function cmd(action) {
+    try {
+      await fetch(`/operator/${action}`, { method: 'POST' });
+    } catch (err) {
+      document.getElementById('error-box').textContent = 'Error: ' + err.message;
+    }
+  }
+</script>
+</body>
+</html>
