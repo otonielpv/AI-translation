@@ -44,3 +44,4 @@ desktop.ini
 .env
 .env.*
 secrets.yaml
+graphify-out/
