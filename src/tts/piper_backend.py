@@ -50,7 +50,7 @@ class PiperTTS(TTSBackend):
         inter_chunk_silence_ms: int = _INTER_CHUNK_SILENCE_MS_DEFAULT,
     ):
         self.model_path = Path(model_path)
-        self.config_path = Path(config_path) if config_path else self._auto_config()
+        self.config_path = Path(config_path) if config_path else None
         self.inter_chunk_silence_ms = inter_chunk_silence_ms
         self._piper = None  # piper Python object if available
         self._use_subprocess = False
@@ -59,17 +59,30 @@ class PiperTTS(TTSBackend):
     def _auto_config(self) -> Path:
         # Try exact <model>.onnx.json first
         candidate = Path(str(self.model_path) + ".json")
-        if candidate.exists():
+        if candidate.is_file():
             return candidate
-        # Fall back to any .json in the same directory
-        parent = Path(self.model_path).parent
-        jsons = list(parent.glob("*.json"))
-        if jsons:
+        # Downloads may prefix the voice name with their repository path.
+        # Never pick an unrelated voice's JSON or an arbitrary first match.
+        jsons = sorted(
+            p for p in self.model_path.parent.glob("*.json")
+            if p.is_file() and p.name.endswith("_" + candidate.name)
+        )
+        if len(jsons) == 1:
             return jsons[0]
-        return Path("")
+        if len(jsons) > 1:
+            raise ValueError(
+                "Multiple Piper configurations match this voice: "
+                + ", ".join(str(p) for p in jsons)
+                + ". Set tts.piper_config to the correct file in config.yaml."
+            )
+        raise FileNotFoundError(
+            f"Piper voice configuration not found: {candidate}. "
+            "Download the .onnx.json file for this exact voice alongside the .onnx model, "
+            "or set tts.piper_config to its existing path in config.yaml."
+        )
 
     def load(self) -> None:
-        if not self.model_path.exists():
+        if not self.model_path.is_file():
             raise FileNotFoundError(
                 f"Piper model not found: {self.model_path}\n"
                 "Download a German voice from:\n"
@@ -77,9 +90,15 @@ class PiperTTS(TTSBackend):
                 "Recommended: de_DE-thorsten-medium.onnx\n"
                 "Place it in models/piper/"
             )
+        if self.config_path is None or not self.config_path.is_file():
+            configured_path = self.config_path
+            self.config_path = self._auto_config()
+            if configured_path is not None:
+                log.warning("Piper configuration %s missing; using %s", configured_path, self.config_path)
+        log.info("Piper voice configuration: %s", self.config_path)
         try:
             from piper import PiperVoice  # type: ignore
-            cfg = str(self.config_path) if self.config_path.exists() else None
+            cfg = str(self.config_path)
             self._piper = PiperVoice.load(str(self.model_path), config_path=cfg, use_cuda=False)
             self._sample_rate = self._piper.config.sample_rate
             log.info("Piper loaded via Python package. sample_rate=%d", self._sample_rate)

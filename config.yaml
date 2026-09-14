@@ -53,7 +53,8 @@ tts:
   # Download from https://huggingface.co/rhasspy/piper-voices
   # Recommended: de_DE-thorsten-medium.onnx
   piper_model: "models/piper/de_DE-thorsten-medium.onnx"
-  piper_config: "models/piper/de_DE-thorsten-medium.onnx.json"
+  # Empty: detect the matching JSON beside the model, including download prefixes.
+  piper_config: ""
   # Milliseconds of silence appended between TTS chunks
   inter_chunk_silence_ms: 50
 
