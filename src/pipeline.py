@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.state import PipelineState, PipelineStatus, pipeline_state
+from src.realtime import LatestQueue, expired
 
 log = logging.getLogger(__name__)
 
@@ -36,15 +37,18 @@ class PipelineController:
         # Inter-thread queues
         self._frame_queue: queue.Queue = queue.Queue(
             maxsize=int(
-                cfg.get("audio", {}).get("ring_buffer_seconds", 30)
+                cfg.get("audio", {}).get("ring_buffer_seconds", 2)
                 * cfg.get("audio", {}).get("sample_rate", 16000)
                 / 1024
                 * 2
             )
         )
-        self._segment_queue: queue.Queue = queue.Queue(maxsize=50)
-        self._text_queue: queue.Queue = queue.Queue(maxsize=50)
-        self._translation_queue: queue.Queue = queue.Queue(maxsize=50)
+        perf = cfg.get("performance", {})
+        pending = perf.get("max_pending_segments", 3)
+        self._max_age = max(1.0, float(perf.get("max_segment_age_seconds", 7)))
+        self._segment_queue = LatestQueue(pending, "STT")
+        self._text_queue = LatestQueue(pending, "Translation")
+        self._translation_queue = LatestQueue(pending, "TTS")
         # audio_queue is owned by broadcaster
         self._audio_queue: queue.Queue = broadcaster.audio_queue
 
@@ -74,6 +78,8 @@ class PipelineController:
 
     def _do_load(self) -> None:
         cfg = self.cfg
+        import torch
+        torch.set_num_threads(max(1, int(cfg.get("performance", {}).get("torch_threads", 2))))
         sr = cfg.get("audio", {}).get("sample_rate", 16000)
 
         # Audio capture — device is already resolved in main.py before uvicorn starts.
@@ -95,7 +101,7 @@ class PipelineController:
             device_index=dev_idx,
             target_sample_rate=sr,
             channels=cfg.get("audio", {}).get("channels", 1),
-            ring_buffer_seconds=cfg.get("audio", {}).get("ring_buffer_seconds", 30),
+            ring_buffer_seconds=cfg.get("audio", {}).get("ring_buffer_seconds", 2),
             frame_queue=self._frame_queue,
         )
 
@@ -109,10 +115,10 @@ class PipelineController:
             segment_queue=self._segment_queue,
             sample_rate=sr,
             pre_roll_ms=vad_cfg.get("pre_roll_ms", 300),
-            post_roll_ms=vad_cfg.get("post_roll_ms", 400),
+            post_roll_ms=vad_cfg.get("post_roll_ms", 150),
             min_speech_ms=vad_cfg.get("min_speech_ms", 250),
-            min_silence_ms=vad_cfg.get("min_silence_ms", 700),
-            max_segment_seconds=vad_cfg.get("max_segment_seconds", 8.0),
+            min_silence_ms=vad_cfg.get("min_silence_ms", 500),
+            max_segment_seconds=vad_cfg.get("max_segment_seconds", 4.0),
             threshold=vad_cfg.get("threshold", 0.3),
             input_gain=vad_cfg.get("input_gain", 1.0),
             dump_segments=debug_cfg.get("dump_segments", False),
@@ -126,15 +132,18 @@ class PipelineController:
         self._stt = WhisperBackend(
             segment_queue=self._segment_queue,
             text_queue=self._text_queue,
-            model_name=stt_cfg.get("model_name", "medium"),
+            model_name=stt_cfg.get("model_name", "small"),
             device=stt_cfg.get("device", "auto"),
             compute_type=stt_cfg.get("compute_type", "int8_float16"),
-            beam_size=stt_cfg.get("beam_size", 5),
+            beam_size=stt_cfg.get("beam_size", 3),
             language=stt_cfg.get("language", "es"),
+            cpu_threads=stt_cfg.get("cpu_threads", 2),
         )
 
         # Load Whisper model now (it's only called via transcribe() in _stt_loop, not via run())
         self._stt.ensure_loaded()
+        # Load VAD before starting capture, so its first load cannot backlog audio.
+        self._vad._load()
 
         # Translation
         from src.translation.helsinki import build_translator
@@ -150,6 +159,7 @@ class PipelineController:
             audio_queue=self._audio_queue,
             tts=tts_engine,
             state=self.state,
+            max_segment_age=self._max_age,
             dump_tts=debug_cfg.get("dump_tts", False),
             dump_dir=Path("debug"),
         )
@@ -171,6 +181,8 @@ class PipelineController:
 
             if not self.state.is_active():
                 log.debug("Pipeline paused/stopped — dropping STT result.")
+                continue
+            if expired(item, self._max_age):
                 continue
 
             text_es: str = item["text"]
@@ -225,8 +237,10 @@ class PipelineController:
 
             if not self.state.is_active():
                 continue
+            if expired(item, self._max_age):
+                continue
 
-            item["segment_start"] = time.monotonic()
+            item.setdefault("segment_start", time.monotonic() - item["duration"])
             audio = item["audio"]
             seg_dur = item["duration"]
 
@@ -240,6 +254,11 @@ class PipelineController:
                     log.warning("[STT] transcribe() returned None (model not loaded?)")
                     continue
                 text, stt_dur = result
+                if stt_dur > seg_dur:
+                    log.warning(
+                        "STT slower than real time: %.2fs processing / %.2fs audio. "
+                        "Check CUDA startup logs and shared PC load.", stt_dur, seg_dur,
+                    )
                 if not text:
                     log.info("[STT] empty result for %.2fs segment", seg_dur)
                     continue

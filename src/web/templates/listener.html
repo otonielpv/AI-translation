@@ -58,6 +58,13 @@
   let audioCtx = null;
   let connected = false;
   let nextPlayTime = 0;
+  let generation = 0;
+  let decoding = false;
+  const pending = [];
+  const sources = new Set();
+  const MAX_BUFFER_SECONDS = 8;
+  const MAX_WAIT_SECONDS = 2;
+  const MAX_PENDING_CHUNKS = 3;
 
   const btn = document.getElementById('btn');
   const btnLabel = document.getElementById('btn-label');
@@ -73,65 +80,110 @@
     }[state || ''] || '';
   }
 
-  function toggleAudio() {
-    if (connected) {
-      disconnect();
-    } else {
-      connect();
+  function clearAudio() {
+    generation++;
+    pending.length = 0;
+    for (const src of sources) {
+      try { src.stop(); } catch (_) {}
+      src.disconnect();
     }
+    sources.clear();
+    nextPlayTime = audioCtx ? audioCtx.currentTime : 0;
+  }
+
+  async function drainAudio() {
+    if (decoding) return;
+    decoding = true;
+    try {
+      while (pending.length) {
+        const {data, epoch} = pending.shift();
+        try {
+          const buf = await audioCtx.decodeAudioData(data);
+          if (epoch !== generation || !connected) continue;
+          const now = audioCtx.currentTime;
+          if (nextPlayTime - now > MAX_WAIT_SECONDS ||
+              Math.max(0, nextPlayTime - now) + buf.duration > MAX_BUFFER_SECONDS) {
+            // Keep the current sentence; discard speech scheduled after it.
+            nextPlayTime = now;
+            for (const src of sources) {
+              if (src.startAt > now) {
+                src.stop();
+                src.disconnect();
+                sources.delete(src);
+              } else {
+                nextPlayTime = Math.max(nextPlayTime, src.endAt);
+              }
+            }
+            statusText.textContent = 'Verzögerung aufgeholt — ältere Abschnitte übersprungen';
+          }
+          const src = audioCtx.createBufferSource();
+          src.buffer = buf;
+          src.connect(audioCtx.destination);
+          // Modest catch-up when translated speech runs longer than the original.
+          const rate = nextPlayTime - now > 2 ? 1.12 : 1;
+          src.playbackRate.value = rate;
+          src.startAt = Math.max(nextPlayTime, now + 0.03);
+          src.endAt = src.startAt + buf.duration / rate;
+          src.onended = () => { sources.delete(src); src.disconnect(); };
+          sources.add(src);
+          src.start(src.startAt);
+          nextPlayTime = src.endAt;
+        } catch (err) {
+          console.warn('Audio chunk could not be played', err);
+        }
+      }
+    } finally {
+      decoding = false;
+    }
+  }
+
+  function toggleAudio() {
+    if (ws) disconnect();
+    else connect();
   }
 
   function connect() {
     if (ws) return;
     setStatus('Verbinde…', 'connecting');
-
-    // AudioContext must be created inside a user gesture
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 22050 });
-    } else if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
     }
-    nextPlayTime = audioCtx.currentTime;
-
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    clearAudio();
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${proto}://${location.host}/ws/audio`);
-    ws.binaryType = 'arraybuffer';
-
-    ws.onopen = () => {
+    const socket = new WebSocket(`${proto}://${location.host}/ws/audio`);
+    ws = socket;
+    socket.binaryType = 'arraybuffer';
+    socket.onopen = () => {
+      if (ws !== socket) return;
       connected = true;
       setStatus('Stoppen', 'connected');
     };
-
-    ws.onmessage = async (e) => {
-      if (!audioCtx) return;
-      try {
-        const buf = await audioCtx.decodeAudioData(e.data.slice(0));
-        const src = audioCtx.createBufferSource();
-        src.buffer = buf;
-        src.connect(audioCtx.destination);
-        const startAt = Math.max(nextPlayTime, audioCtx.currentTime + 0.05);
-        src.start(startAt);
-        nextPlayTime = startAt + buf.duration;
-      } catch (err) {
-        // If the chunk can't be decoded (partial WAV header), skip it
+    socket.onmessage = (e) => {
+      if (ws !== socket || !connected) return;
+      if (pending.length >= MAX_PENDING_CHUNKS) {
+        pending.shift();
+        statusText.textContent = 'Verzögerung aufgeholt — ältere Abschnitte übersprungen';
       }
+      pending.push({data: e.data, epoch: generation});
+      drainAudio();
     };
-
-    ws.onclose = () => { onDisconnect('Verbindung unterbrochen'); };
-    ws.onerror = () => { onDisconnect('Verbindungsfehler'); };
-  }
-
-  function onDisconnect(reason) {
-    connected = false;
-    ws = null;
-    setStatus('Deutsch hören', '');
-    statusText.textContent = reason + ' — Erneut tippen zum Verbinden';
+    const lost = (reason) => {
+      if (ws !== socket) return;
+      disconnect();
+      statusText.textContent = reason + ' — Erneut tippen zum Verbinden';
+    };
+    socket.onclose = () => lost('Verbindung unterbrochen');
+    socket.onerror = () => lost('Verbindungsfehler');
   }
 
   function disconnect() {
-    if (ws) { ws.close(); ws = null; }
+    const socket = ws;
+    ws = null;
     connected = false;
-    if (audioCtx) { audioCtx.suspend(); }
+    if (socket) socket.close();
+    clearAudio();
+    if (audioCtx) audioCtx.suspend();
     setStatus('Deutsch hören', '');
   }
 </script>

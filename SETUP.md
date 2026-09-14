@@ -68,7 +68,7 @@ Edit `config.yaml`:
 
 - `audio.device`: Set to `"Behringer"` (auto-detect) or a device index.
   Leave as `null` to be prompted on startup.
-- `stt.model_name`: Start with `"medium"`. Use `"large-v3-turbo"` on GPU.
+- `stt.model_name`: Start with `"small"` on the shared streaming PC. See [PERFORMANCE.md](PERFORMANCE.md) for the profile, tradeoffs and a live validation procedure.
 - `stt.device`: `"cuda"` (GPU) or `"cpu"`.
 - `midi.enabled`: Set to `true` if you want MIDI control from FreeShow.
 

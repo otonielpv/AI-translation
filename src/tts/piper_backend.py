@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+from src.realtime import expired
 
 log = logging.getLogger(__name__)
 
@@ -83,7 +84,10 @@ class PiperTTS(TTSBackend):
             self._sample_rate = self._piper.config.sample_rate
             log.info("Piper loaded via Python package. sample_rate=%d", self._sample_rate)
         except ImportError:
-            log.info("piper Python package not found — will use subprocess.")
+            log.warning(
+                "piper Python package not found: subprocess fallback reloads the voice for each chunk. "
+                "Install piper-tts in this environment to reduce live translation latency."
+            )
             self._use_subprocess = True
             self._detect_sample_rate()
 
@@ -183,6 +187,7 @@ class TTSWorker:
         state,  # PipelineState
         dump_tts: bool = False,
         dump_dir: Path = Path("debug"),
+        max_segment_age: float = 7.0,
     ):
         self.translation_queue = translation_queue
         self.audio_queue = audio_queue
@@ -190,6 +195,7 @@ class TTSWorker:
         self.state = state
         self.dump_tts = dump_tts
         self.dump_dir = dump_dir
+        self.max_segment_age = max_segment_age
         self._stopped = False
         self._tts_idx = 0
 
@@ -204,13 +210,15 @@ class TTSWorker:
                 continue
 
             text_de: str = item["text_de"]
-            if not text_de:
+            if not text_de or not self.state.is_active() or expired(item, self.max_segment_age):
                 continue
 
             try:
                 wav, tts_dur = self.tts.synthesize(text_de)
             except Exception as exc:
                 log.exception("TTS error: %s", exc)
+                continue
+            if not wav or not self.state.is_active() or expired(item, self.max_segment_age):
                 continue
 
             if self.dump_tts and wav:
@@ -226,7 +234,7 @@ class TTSWorker:
             seg_start = item.get("segment_start", now)
 
             total_pipeline = stt_dur + tr_dur + tts_dur
-            user_delay = (now - seg_start) + seg_dur  # approx
+            user_delay = now - seg_start  # segment collection and processing queues included
 
             log.info(
                 "[latency] segment=%.2fs stt=%.2fs translation=%.2fs tts=%.2fs "

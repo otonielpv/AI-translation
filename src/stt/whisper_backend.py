@@ -28,11 +28,12 @@ class WhisperBackend:
         self,
         segment_queue: queue.Queue,
         text_queue: queue.Queue,
-        model_name: str = "medium",
+        model_name: str = "small",
         device: str = "auto",
         compute_type: str = "int8_float16",
-        beam_size: int = 5,
+        beam_size: int = 3,
         language: str = "es",
+        cpu_threads: int = 2,
     ):
         self.segment_queue = segment_queue
         self.text_queue = text_queue
@@ -41,19 +42,22 @@ class WhisperBackend:
         self.compute_type = compute_type
         self.beam_size = beam_size
         self.language = language
+        self.cpu_threads = max(1, int(cpu_threads))
         self._model = None
         self._stopped = False
 
     def _resolve_device(self) -> tuple[str, str]:
+        if self.device == "cpu":
+            return "cpu", "int8"
         if self.device != "auto":
             return self.device, self.compute_type
         try:
-            import torch
-            if torch.cuda.is_available():
+            import ctranslate2
+            if ctranslate2.get_cuda_device_count() > 0:
                 log.info("CUDA available — using GPU for STT.")
                 return "cuda", self.compute_type
-        except ImportError:
-            pass
+        except (ImportError, RuntimeError) as exc:
+            log.warning("CTranslate2 CUDA detection failed: %s", exc)
         log.info("CUDA not available — using CPU for STT (compute_type=int8).")
         return "cpu", "int8"
 
@@ -71,17 +75,22 @@ class WhisperBackend:
                 self.model_name,
                 device=device,
                 compute_type=compute_type,
+                cpu_threads=self.cpu_threads,
+                num_workers=1,
             )
         except Exception as exc:
             log.warning("Failed to load model on %s: %s. Retrying on CPU with int8.", device, exc)
-            self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
+            self._model = WhisperModel(
+                self.model_name, device="cpu", compute_type="int8",
+                cpu_threads=self.cpu_threads, num_workers=1,
+            )
         log.info("Whisper model loaded in %.1fs.", time.monotonic() - t0)
 
     def ensure_loaded(self) -> None:
         if self._model is None:
             self._load_model()
 
-    def transcribe(self, audio: np.ndarray, segment_duration: float) -> Optional[str]:
+    def transcribe(self, audio: np.ndarray, segment_duration: float) -> Optional[tuple[str, float]]:
         if self._model is None:
             return None
         t0 = time.monotonic()

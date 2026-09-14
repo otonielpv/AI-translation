@@ -15,30 +15,37 @@ audio:
   sample_rate: 16000
   channels: 1
   # Buffer size in seconds for the ring buffer
-  ring_buffer_seconds: 30
+  ring_buffer_seconds: 2
+
+performance:
+  torch_threads: 2              # Shared by VAD and CPU translation
+  max_pending_segments: 3       # On overload, skip oldest waiting speech
+  max_segment_age_seconds: 7    # Server budget; leaves margin for network/playback
 
 vad:
   pre_roll_ms: 300
-  post_roll_ms: 400
+  post_roll_ms: 150
   min_speech_ms: 250
-  min_silence_ms: 700
-  max_segment_seconds: 8
+  min_silence_ms: 500
+  max_segment_seconds: 4
   threshold: 0.2
   # Multiply audio amplitude before VAD. Increase if mic gain is low.
   # 1.0 = no boost. Set to 1.0 once Windows mic level is at 80%+.
   input_gain: 6.0
 
 stt:
-  model_name: "medium"           # base / small / medium / large-v2 / large-v3 / large-v3-turbo
+  model_name: "small"            # Balanced shared-PC profile; validate with church recordings
   language: "es"
   device: "auto"                 # auto / cuda / cpu
   compute_type: "int8_float16"   # float16 / int8_float16 / int8
-  beam_size: 5
+  beam_size: 3
+  cpu_threads: 2
 
 translation:
   backend: "helsinki"            # helsinki | argos
   # Helsinki model is downloaded automatically on first use
   helsinki_model: "Helsinki-NLP/opus-mt-es-de"
+  num_beams: 2                  # Consider alternatives while keeping CPU work moderate
 
 tts:
   backend: "piper"               # piper
@@ -46,13 +53,13 @@ tts:
   # Download from https://huggingface.co/rhasspy/piper-voices
   # Recommended: de_DE-thorsten-medium.onnx
   piper_model: "models/piper/de_DE-thorsten-medium.onnx"
-  piper_config: "models/piper/de_de_DE_thorsten_medium_de_DE-thorsten-medium.onnx.json"
+  piper_config: "models/piper/de_DE-thorsten-medium.onnx.json"
   # Milliseconds of silence appended between TTS chunks
-  inter_chunk_silence_ms: 200
+  inter_chunk_silence_ms: 50
 
 streaming:
   # Maximum queued audio chunks per listener before old ones are dropped
-  max_listener_queue: 20
+  max_listener_queue: 3
 
 midi:
   enabled: false
@@ -83,9 +90,9 @@ midi:
 
 debug:
   # Write captured speech segments to debug/seg_XXXX_es.wav
-  dump_segments: true
+  dump_segments: false
   # Write each TTS output chunk to debug/tts_XXXX_de.wav
-  dump_tts: true
+  dump_tts: false
   # Log all incoming MIDI events
   log_midi_events: true
   # Log level: DEBUG / INFO / WARNING / ERROR

@@ -154,12 +154,13 @@ def main():
     pipeline_state.audio_device_name = dev_name
 
     # Broadcaster
-    audio_queue: queue.Queue = queue.Queue(maxsize=200)
+    from src.realtime import LatestQueue
+    audio_queue = LatestQueue(cfg.get("performance", {}).get("max_pending_segments", 3), "Broadcast")
     from src.streaming.broadcaster import AudioBroadcaster
 
     broadcaster = AudioBroadcaster(
         audio_queue=audio_queue,
-        max_queue=cfg.get("streaming", {}).get("max_listener_queue", 20),
+        max_queue=cfg.get("streaming", {}).get("max_listener_queue", 3),
     )
 
     # Pipeline controller

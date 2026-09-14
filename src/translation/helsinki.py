@@ -37,8 +37,9 @@ class TranslationBackend:
 
 
 class HelsinkiTranslator(TranslationBackend):
-    def __init__(self, model_name: str = "Helsinki-NLP/opus-mt-es-de"):
+    def __init__(self, model_name: str = "Helsinki-NLP/opus-mt-es-de", num_beams: int = 2):
         self.model_name = model_name
+        self.num_beams = max(1, int(num_beams))
         self._tokenizer = None
         self._model = None
 
@@ -49,6 +50,7 @@ class HelsinkiTranslator(TranslationBackend):
         t0 = time.monotonic()
         self._tokenizer = MarianTokenizer.from_pretrained(self.model_name)
         self._model = MarianMTModel.from_pretrained(self.model_name)
+        self._model.eval()
         log.info("Translation model loaded in %.1fs.", time.monotonic() - t0)
 
     def _normalize(self, text: str) -> str:
@@ -75,7 +77,9 @@ class HelsinkiTranslator(TranslationBackend):
 
         t0 = time.monotonic()
         inputs = self._tokenizer([text], return_tensors="pt", padding=True, truncation=True, max_length=512)
-        outputs = self._model.generate(**inputs)
+        import torch
+        with torch.inference_mode():
+            outputs = self._model.generate(**inputs, num_beams=self.num_beams, do_sample=False)
         translated = self._tokenizer.decode(outputs[0], skip_special_tokens=True)
         translated = self._apply_glossary(translated)
         duration = time.monotonic() - t0
@@ -87,7 +91,7 @@ def build_translator(cfg: dict) -> TranslationBackend:
     backend = cfg.get("translation", {}).get("backend", "helsinki")
     if backend == "helsinki":
         model = cfg.get("translation", {}).get("helsinki_model", "Helsinki-NLP/opus-mt-es-de")
-        t = HelsinkiTranslator(model_name=model)
+        t = HelsinkiTranslator(model_name=model, num_beams=cfg.get("translation", {}).get("num_beams", 2))
         t.load()
         return t
     raise ValueError(f"Unknown translation backend: {backend!r}")

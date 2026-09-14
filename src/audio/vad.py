@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import time
 import wave
 from pathlib import Path
 
@@ -32,10 +33,10 @@ class VADSegmenter:
         segment_queue: queue.Queue,
         sample_rate: int = 16000,
         pre_roll_ms: int = 300,
-        post_roll_ms: int = 400,
+        post_roll_ms: int = 150,
         min_speech_ms: int = 250,
-        min_silence_ms: int = 700,
-        max_segment_seconds: float = 8.0,
+        min_silence_ms: int = 500,
+        max_segment_seconds: float = 4.0,
         threshold: float = 0.3,
         input_gain: float = 1.0,
         dump_segments: bool = False,
@@ -88,7 +89,7 @@ class VADSegmenter:
         with torch.no_grad():
             return self._model(t, self.sr).item()
 
-    def _emit(self, frames: np.ndarray) -> None:
+    def _emit(self, frames: np.ndarray, segment_start: float | None = None) -> None:
         dur = len(frames) / self.sr
         if len(frames) < self.min_speech:
             log.debug("VAD: segment too short (%.2fs), discarding", dur)
@@ -111,7 +112,10 @@ class VADSegmenter:
         if self.input_gain != 1.0:
             frames = np.clip(frames * self.input_gain, -1.0, 1.0)
         try:
-            self.segment_queue.put_nowait({"audio": frames, "duration": dur})
+            self.segment_queue.put_nowait({
+                "audio": frames, "duration": dur,
+                "segment_start": segment_start if segment_start is not None else time.monotonic() - dur,
+            })
         except queue.Full:
             log.warning("VAD: segment queue full, dropping")
 
@@ -120,7 +124,9 @@ class VADSegmenter:
 
     def run(self) -> None:
         """Blocking loop — run in a dedicated daemon thread."""
-        self._load()
+        if self._model is None:
+            self._load()
+        self._model.reset_states()
 
         in_speech = False
         silence_frames = 0
@@ -129,6 +135,7 @@ class VADSegmenter:
         pre_len = 0
         active: list[np.ndarray] = []
         active_len = 0
+        segment_start = None
 
         leftover = np.empty(0, dtype=np.float32)
         chunks_processed = 0
@@ -174,7 +181,7 @@ class VADSegmenter:
                     pre_buf.append(chunk)
                     pre_len += _CHUNK
                     # Keep only the last pre_roll frames
-                    while pre_len - len(pre_buf[0]) >= self.pre_roll:
+                    while len(pre_buf) > 1 and pre_len - len(pre_buf[0]) >= self.pre_roll:
                         removed = pre_buf.pop(0)
                         pre_len -= len(removed)
 
@@ -184,6 +191,7 @@ class VADSegmenter:
                         silence_frames = 0
                         active = list(pre_buf)
                         active_len = pre_len
+                        segment_start = time.monotonic() - (len(audio) - pos + active_len) / self.sr
                         pre_buf = []
                         pre_len = 0
                 else:
@@ -197,7 +205,7 @@ class VADSegmenter:
 
                     if active_len >= self.max_segment:
                         log.debug("VAD: max segment reached, force-emitting")
-                        self._emit(np.concatenate(active))
+                        self._emit(np.concatenate(active), segment_start)
                         in_speech = False
                         silence_frames = 0
                         active = []
@@ -210,7 +218,7 @@ class VADSegmenter:
                         segment = np.concatenate(active)
                         # Keep post_roll of the trailing silence
                         keep = max(active_len - silence_frames + min(silence_frames, self.post_roll), 0)
-                        self._emit(segment[:keep])
+                        self._emit(segment[:keep], segment_start)
                         in_speech = False
                         silence_frames = 0
                         active = []
