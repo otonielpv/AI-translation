@@ -67,6 +67,15 @@
       </select>
       <div class="device-msg" id="device-msg"></div>
     </div>
+
+    <div class="device-row">
+      <label>Test with a media file (mic is skipped)</label>
+      <input type="file" id="test-file" accept="audio/*,video/*"
+             style="width:100%;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:7px 10px;font-size:0.8rem;" />
+      <button class="btn btn-blue" style="margin-top:6px;width:100%"
+              id="btn-play-file" onclick="playTestFile()">▶ Play file through pipeline</button>
+      <div class="device-msg" id="file-msg"></div>
+    </div>
   </div>
 
   <!-- Stats -->
@@ -215,6 +224,33 @@
       await fetch(`/operator/${action}`, { method: 'POST' });
     } catch (err) {
       document.getElementById('error-box').textContent = 'Error: ' + err.message;
+    }
+  }
+
+  async function playTestFile() {
+    const input = document.getElementById('test-file');
+    const msg = document.getElementById('file-msg');
+    if (!input.files || input.files.length === 0) {
+      msg.textContent = 'Choose a file first.';
+      return;
+    }
+    if (_pipelineStatus !== 'stopped') {
+      msg.textContent = 'Stop the pipeline before starting a file test.';
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', input.files[0]);
+    msg.textContent = 'Uploading…';
+    try {
+      const res = await fetch('/operator/upload-test-file', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (data.ok) {
+        msg.textContent = `Playing: ${data.path}`;
+      } else {
+        msg.textContent = 'Error: ' + (data.error || 'unknown');
+      }
+    } catch (err) {
+      msg.textContent = 'Upload failed: ' + err.message;
     }
   }
 </script>

@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from src.state import PipelineState, PipelineStatus, pipeline_state
@@ -72,10 +72,42 @@ def create_app(
         return {"ok": True}
 
     @app.post("/operator/start")
-    async def op_start():
+    async def op_start(body: dict = None):
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, pipeline_control.start)
+        source_file = (body or {}).get("source_file")
+        await loop.run_in_executor(None, pipeline_control.start, source_file)
         return {"ok": True}
+
+    @app.post("/operator/play-file")
+    async def op_play_file(body: dict):
+        """Start the pipeline using a media file as the audio source."""
+        path = body.get("path")
+        if not path:
+            return {"ok": False, "error": "missing 'path'"}
+        from pathlib import Path as _Path
+        if not _Path(path).exists():
+            return {"ok": False, "error": f"file not found: {path}"}
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, pipeline_control.start, path)
+        return {"ok": True}
+
+    @app.post("/operator/upload-test-file")
+    async def op_upload_test_file(file: UploadFile = File(...)):
+        """Upload a video/audio file and start the pipeline playing it."""
+        from pathlib import Path as _Path
+
+        uploads_dir = _Path("debug") / "uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        dest = uploads_dir / file.filename
+        with dest.open("wb") as f:
+            while True:
+                chunk = await file.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, pipeline_control.start, str(dest))
+        return {"ok": True, "path": str(dest)}
 
     @app.post("/operator/pause")
     async def op_pause():

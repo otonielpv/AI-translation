@@ -61,6 +61,7 @@ class PipelineController:
         self._load_lock = threading.Lock()
         self._stopping = False  # instance variable, not class variable
         self._start_lock = threading.Lock()
+        self._file_player = None  # set when using a file as source instead of mic
 
     # ------------------------------------------------------------------
     # Load models (blocking — call before start, or on first start)
@@ -260,7 +261,14 @@ class PipelineController:
     # Public controls
     # ------------------------------------------------------------------
 
-    def start(self) -> None:
+    def start(self, source_file: Optional[str] = None) -> None:
+        """
+        Start the pipeline.
+
+        If source_file is given, audio is read from that media file (any
+        ffmpeg-supported format) instead of the live microphone. Useful for
+        testing translation against a recorded preach.
+        """
         with self._start_lock:
             if self.state.status != PipelineStatus.STOPPED:
                 log.warning("Pipeline already running or paused — ignoring start.")
@@ -284,8 +292,26 @@ class PipelineController:
         self._tts_worker._stopped = False
         self._stt._stopped = False
 
-        # Start audio capture
-        self._capture.start()
+        # Start audio source: either the mic or a file player
+        if source_file:
+            from src.audio.file_player import FilePlayer
+            from pathlib import Path as _Path
+            try:
+                self._file_player = FilePlayer(
+                    file_path=_Path(source_file),
+                    frame_queue=self._frame_queue,
+                    target_sample_rate=self.cfg.get("audio", {}).get("sample_rate", 16000),
+                )
+                self._file_player.start()
+                self.state.audio_device_name = f"[FILE] {_Path(source_file).name}"
+            except Exception as exc:
+                log.error("Failed to start file player: %s", exc)
+                with self.state._lock:
+                    self.state.last_error = str(exc)
+                    self.state.status = PipelineStatus.STOPPED
+                return
+        else:
+            self._capture.start()
 
         # Start worker threads
         self._threads = [
@@ -347,6 +373,9 @@ class PipelineController:
         self._stopping = True
         self.state.set_status(PipelineStatus.STOPPED)
 
+        if self._file_player:
+            self._file_player.stop()
+            self._file_player = None
         if self._capture:
             self._capture.stop()
         if self._vad:

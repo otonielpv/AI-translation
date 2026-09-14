@@ -24,6 +24,7 @@ def _parse_args():
     p.add_argument("--test-audio", action="store_true", help="Record 10 s test WAV and exit")
     p.add_argument("--list-midi", action="store_true", help="List MIDI devices and exit")
     p.add_argument("--device", default=None, help="Audio device index or name (overrides config)")
+    p.add_argument("--play-file", default=None, help="Path to a video/audio file to feed into the pipeline (test mode)")
     return p.parse_args()
 
 
@@ -172,11 +173,17 @@ def main():
     setup_midi(cfg, controller)
 
     # FastAPI app with lifespan
+    play_file = args.play_file
+
     @contextlib.asynccontextmanager
     async def lifespan(app):
         # startup
         task = asyncio.create_task(broadcaster.run(), name="broadcaster")
         log.info("Broadcaster task started.")
+        if play_file:
+            log.info("Auto-starting pipeline with test file: %s", play_file)
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, controller.start, play_file)
         yield
         # shutdown
         task.cancel()
